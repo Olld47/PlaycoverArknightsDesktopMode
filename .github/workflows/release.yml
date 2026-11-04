@@ -1,0 +1,100 @@
+name: Build and Release
+
+# Builds libAKDMDesktopMode.dylib and attaches it to a GitHub Release.
+#
+# Trigger by pushing a tag (v0.1, v1.2.3, ...). The two symbol-resolution
+# validators need the game bundle (global-metadata.dat + UnityFramework), which
+# is not redistributable, so CI runs only the parts that are self-contained:
+# the keyboard state-machine unit tests and the plugin build itself.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # required to create the release
+
+jobs:
+  build:
+    runs-on: macos-14 # Apple Silicon; build.sh needs the Catalyst SDK
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          xcrun --show-sdk-path
+          swift --version | head -1
+
+      - name: Verify Catalyst frameworks are present
+        run: |
+          SDK="$(xcrun --show-sdk-path)"
+          test -d "$SDK/System/iOSSupport/System/Library/Frameworks" || {
+            echo "Mac Catalyst frameworks missing under $SDK"
+            exit 1
+          }
+
+      - name: Run keyboard unit tests
+        run: |
+          SDK="$(xcrun --show-sdk-path)"
+          mkdir -p build
+          xcrun clang++ -std=c++17 -O1 -isysroot "$SDK" \
+            -I"$SDK/usr/include/c++/v1" -Isrc \
+            tools/test_input.cpp src/AKDMInput.cpp -o build/test_input
+          ./build/test_input
+
+      - name: Build release plugin
+        run: zsh build.sh
+
+      - name: Build logging plugin
+        env:
+          AKDM_ENABLE_LOGGING: "1"
+        run: |
+          zsh build.sh
+          cp libAKDMDesktopMode.dylib libAKDMDesktopMode-debug.dylib
+          zsh build.sh # restore the release artifact as the main output
+
+      - name: Verify artifacts
+        run: |
+          for f in libAKDMDesktopMode.dylib libAKDMDesktopMode-debug.dylib; do
+            test -f "$f"
+            file "$f"
+            codesign --verify --strict "$f"
+            otool -D "$f"
+            shasum -a 256 "$f"
+          done
+          # The release build must not contain the log-format string that only
+          # the logging build pulls in.
+          if strings -a libAKDMDesktopMode.dylib | grep -q "tick=%lu"; then
+            echo "release dylib unexpectedly contains logging format strings"
+            exit 1
+          fi
+
+      - name: Stage release assets
+        run: |
+          mkdir -p dist
+          cp libAKDMDesktopMode.dylib dist/
+          cp libAKDMDesktopMode-debug.dylib dist/libAKDMDesktopMode-debug.dylib
+          cp config.example.plist dist/
+          shasum -a 256 dist/* > dist/SHA256SUMS
+          cat dist/SHA256SUMS
+
+      - name: Upload artifacts (every run)
+        uses: actions/upload-artifact@v4
+        with:
+          name: libAKDMDesktopMode-${{ github.ref_name }}
+          path: dist/
+
+      - name: Create release (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/libAKDMDesktopMode.dylib \
+            dist/libAKDMDesktopMode-debug.dylib \
+            dist/config.example.plist \
+            dist/SHA256SUMS
