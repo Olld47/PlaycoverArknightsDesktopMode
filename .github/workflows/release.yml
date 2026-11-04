@@ -48,12 +48,11 @@ jobs:
         run: zsh build.sh
 
       - name: Build logging plugin
-        env:
-          AKDM_ENABLE_LOGGING: "1"
         run: |
-          zsh build.sh
+          AKDM_ENABLE_LOGGING=1 zsh build.sh
           cp libAKDMDesktopMode.dylib libAKDMDesktopMode-debug.dylib
-          zsh build.sh # restore the release artifact as the main output
+          # Rebuild with logging off so the main artifact is the release build.
+          AKDM_ENABLE_LOGGING=0 zsh build.sh
 
       - name: Verify artifacts
         run: |
