@@ -34,6 +34,7 @@ SOURCES=(
   src/AKDMInput.cpp
   src/AKDMHardware.mm
   src/AKDMHook.cpp
+  src/AKDMUnityKey.mm
   src/AKDMPlugin.mm
 )
 

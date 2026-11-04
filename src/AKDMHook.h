@@ -62,4 +62,54 @@ void RefreshHardwareObservers();
 // which is the only safe place to call into managed code.
 void SetFirstCallAction(void (*action)());
 
+// Installs a fully transparent probe on Input.get_touchCount: the game's own
+// implementation is always called through, so touch behaviour is untouched.
+// Its only purpose is to give the one-shot callback a reliable trigger — the
+// game queries touchCount every frame, but a game that is not yet in PC mode
+// never queries GetKey, so the keyboard hooks themselves cannot be the trigger
+// (chicken-and-egg: the keyboard hooks cannot install until the slots resolve,
+// and the slots only resolve once the game asks for keys).
+bool InstallTouchProbe(class Target &target, uintptr_t slide);
+
+// Sets the callback the touch probe runs on *every* call (not once). Used for
+// work that must be retried until the IL2CPP class it touches is initialised.
+void SetProbeAction(void (*action)());
+
+// Forces DeviceInfoUtil.IsPCMode() to return true by populating the
+// __Hotfix0_IsPCMode static delegate slot with a minimal wrapper object whose
+// method pointer just returns true.
+//
+// Why not DeviceInfoUtil.SetPCMode(true): that method routes through a platform
+// strategy object that is never assembled in the iOS build, so the call is a
+// silent no-op (observed: invoked without effect, IsPCMode still false). The
+// hot-update framework's own hook slot is what the reference implementation
+// (libUnityDesktopMode) populates via Marshal::GetDelegateForFunctionPointer;
+// the dispatch site in IsPCMode only dereferences +0x18/+0x28/+0x40 of the
+// object, so a hand-built object with a `return true` stub behaves identically.
+//
+// Must run once, on the IL2CPP thread, after the class is initialised.
+bool InstallPCModeOverride(class Target &target, uintptr_t slide);
+
+// Reports whether the game's PC input module is alive. Samples the
+// TorappuPCInputHelper static singletons that OnProcess dereferences before it
+// ever reaches the IsPCMode branch:
+//
+//   OnProcess: +44 ldr x0,[statics+0x50] ; +48 cbz x0 -> other path
+//
+// A permanently null slot means the module was never assembled on iOS, which
+// is what a real fix would have to address. Returns true once the slot is
+// populated (the game did it itself, no action needed).
+bool ProbeInputModule(class Target &target);
+
+// Locates Unity's internal UnitySetKeyState, which is not exported and cannot
+// be found by symbol lookup. It is reached through -[UnityView handleCommand:]:
+// that method contains a BL to it, and the callee has a recognisable epilogue.
+// Returns the runtime address, or 0 when the pattern is absent.
+uintptr_t FindUnitySetKeyState(class Target &target);
+
+// Feeds a key press into Unity's own input state so any consumer sees it,
+// regardless of whether the game polls Input.GetKey itself. Safe to call from
+// any thread that already holds the IL2CPP runtime.
+bool InjectKeyState(int32_t unityKey, bool down);
+
 } // namespace akdm

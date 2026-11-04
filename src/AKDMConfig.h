@@ -9,10 +9,13 @@
 namespace akdm {
 
 struct Config {
-    // Off by default: calling the managed setter is the only correct way to
-    // flip PC mode, but it runs inside IL2CPP and is the least proven part of
-    // the plugin. Enable it explicitly once the keyboard path is verified.
-    bool enablePCMode = false;
+    // On by default: PC mode is what makes the game query Input.GetKey at all.
+    // Without it the keyboard hooks can never install (the slots only resolve
+    // once the game asks for keys), so a default of false disables the whole
+    // plugin. The managed SetPCMode(true) call is safe now: it fires through
+    // the touch probe, on the IL2CPP thread, from the game's own per-frame
+    // touchCount query.
+    bool enablePCMode = true;
     bool enableInputHooks = true;
 };
 

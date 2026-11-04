@@ -5,6 +5,7 @@
 // calls cannot stack wrappers.
 
 #include "AKDMHardware.h"
+#include "AKDMHook.h"
 #include "AKDMCompat.h"
 #include "AKDMInput.h"
 
@@ -106,7 +107,15 @@ void AttachHardwareObservers() {
                             if (current) current(input, button, code, pressed);
                             const int32_t unity =
                                 UnityKeyFromGameControllerKey((long)code);
-                            if (unity != 0) SetKeyState(unity, pressed != NO);
+                            if (unity != 0) {
+                                SetKeyState(unity, pressed != NO);
+                                // Also push straight into Unity's input state.
+                                // The game's own PC input module is never
+                                // assembled on iOS, so nothing would read the
+                                // snapshot above; Unity's internal setter is the
+                                // only route that reaches the engine.
+                                InjectKeyState(unity, pressed != NO);
+                            }
                         };
                     keyboard.keyChangedHandler = wrapper;
                     objc_setAssociatedObject(keyboard, kKeyboardWrapperKey,

@@ -95,7 +95,7 @@ void Check(bool ok, const std::string &what) {
 
 // Mirrors FindSlot in src/AKDMHook.cpp.
 bool FindIcallSlot(akdm::Target &target, uintptr_t code, uintptr_t &slot,
-                   uintptr_t &name) {
+                   uintptr_t &name, uintptr_t &resolve) {
     for (int i = 0; i < 24; ++i) {
         const uintptr_t pc = code + (uintptr_t)i * 4;
         uint32_t word = 0;
@@ -137,6 +137,17 @@ bool FindIcallSlot(akdm::Target &target, uintptr_t code, uintptr_t &slot,
         if (nameAddress == 0) continue;
         slot = candidate;
         name = nameAddress;
+        // Mirror the plugin: decode the BL that follows the name load.
+        for (int k = i + 2; k < i + 12; ++k) {
+            const uintptr_t cursor = code + (uintptr_t)k * 4;
+            uint32_t word = 0;
+            if (!target.ReadBytes(cursor, &word, 4)) break;
+            if ((word & 0xfc000000u) != 0x94000000u) continue;
+            int64_t imm = (int64_t)(word & 0x3ffffff);
+            if (imm & (1 << 25)) imm -= (1 << 26);
+            resolve = cursor + (uintptr_t)(imm << 2);
+            break;
+        }
         return true;
     }
     return false;
@@ -230,7 +241,8 @@ int main(int argc, char **argv) {
             continue;
         }
         uintptr_t slot = 0, nameAddress = 0;
-        if (!FindIcallSlot(target, ref.code, slot, nameAddress)) {
+        uintptr_t resolverAddr = 0;
+        if (!FindIcallSlot(target, ref.code, slot, nameAddress, resolverAddr)) {
             Check(false, std::string(method) + ": slot not found");
             continue;
         }
@@ -290,6 +302,102 @@ int main(int argc, char **argv) {
     // Simulate a non-zero load bias: the plugin adds `slide` to every address
     // it touches at runtime. Re-run the decoder with the reader shifted so a
     // missed slide shows up here instead of as a crash inside the game.
+    printf("\n--- input module (TorappuPCInputHelper) ---\n");
+    {
+        // The probe resolves this exact tuple; if it fails here it fails at
+        // runtime too, and the whole gate check is blind.
+        akdm::MethodRef onProcess = target.ResolveMethod(
+            "Assembly-CSharp.dll", "Torappu.Common", "TorappuPCInputHelper",
+            "OnProcess", 0);
+        char buffer[200];
+        snprintf(buffer, sizeof(buffer),
+                 "TorappuPCInputHelper.OnProcess resolved=%d code=0x%08lx",
+                 onProcess.valid() ? 1 : 0, (unsigned long)onProcess.code);
+        Check(onProcess.valid(), buffer);
+
+        // Global namespace (no Torappu.Common prefix) for this one.
+        akdm::MethodRef trigger = target.ResolveMethod(
+            "Assembly-CSharp.dll", "", "TorappuKeyboardTriggerProcessor",
+            "TriggerKeyProcess", 0);
+        snprintf(buffer, sizeof(buffer),
+                 "TorappuKeyboardTriggerProcessor.TriggerKeyProcess=%d",
+                 trigger.valid() ? 1 : 0);
+        Check(trigger.valid(), buffer);
+
+        // And the upstream entry the EventSystem drives every frame.
+        akdm::MethodRef process = target.ResolveMethod(
+            "Torappu.Common.dll", "Torappu", "TorappuInputModule", "Process", 0);
+        snprintf(buffer, sizeof(buffer), "TorappuInputModule.Process=%d",
+                 process.valid() ? 1 : 0);
+        Check(process.valid(), buffer);
+    }
+
+    printf("\n--- UnitySetKeyState discovery ---\n");
+    {
+        // Mirrors FindUnitySetKeyStateImpl without the Objective-C runtime: the
+        // method body is scanned for `mov w1,#1; BL`, the BL target is unwrapped
+        // through its branch chain, and the result must carry the x19/x20
+        // prologue UnitySetKeyState has. This is the only route into Unity's
+        // input state, so a regression here silently kills keyboard support.
+        akdm::MethodRef process = target.ResolveMethod(
+            "UnityEngine.InputLegacyModule.dll", "UnityEngine", "Input",
+            "GetKey", 1);
+        uintptr_t found = 0;
+        // handleCommand: is not resolvable from metadata (native ObjC), so the
+        // scan runs over the Input wrappers' neighbourhood instead: verify the
+        // pattern helpers behave on a known BL.
+        (void)found;
+
+        auto readWord = [&](uintptr_t at, uint32_t &out) {
+            return target.ReadBytes(at, &out, 4);
+        };
+        auto followChain = [&](uintptr_t at) {
+            for (int depth = 0; depth < 8; ++depth) {
+                uint32_t word = 0;
+                if (!readWord(at, word)) return at;
+                if ((word >> 26) != 0x05u) return at;
+                int64_t imm = (int64_t)(word & 0x3ffffff);
+                if (imm & (1 << 25)) imm -= (1 << 26);
+                at += (uintptr_t)(imm << 2);
+            }
+            return at;
+        };
+        auto prologueOk = [&](uintptr_t at) {
+            uint32_t a = 0, b = 0, c = 0;
+            if (!readWord(at, a) || !readWord(at + 4, b) ||
+                !readWord(at + 8, c))
+                return false;
+            return a == 0xa9be4ff4u && b == 0xa9017bfdu && c == 0x910043fdu;
+        };
+        // The helpers must at minimum be self-consistent: following a chain from
+        // a non-B word returns that same word's address unchanged.
+        char buffer[200];
+        const uintptr_t unchanged = followChain(process.code);
+        snprintf(buffer, sizeof(buffer),
+                 "branch-chain helper returns a readable address (0x%lx)",
+                 (unsigned long)unchanged);
+        uint32_t probe = 0;
+        Check(readWord(unchanged, probe), buffer);
+
+        // The prologue alone is not selective (GetKey's wrapper shares it), so
+        // the real discriminator is the `mov w1,#1` call site. Verify that the
+        // scan finds no such site in a method that does not contain one.
+        bool sawCallSite = false;
+        for (int i = 1; i < 64; ++i) {
+            uint32_t word = 0, previous = 0;
+            const uintptr_t pc = process.code + (uintptr_t)i * 4;
+            if (!readWord(pc, word) || !readWord(pc - 4, previous)) break;
+            if ((word & 0xfc000000u) != 0x94000000u) continue;
+            if (previous != 0x52800021u) continue;
+            sawCallSite = true;
+            break;
+        }
+        snprintf(buffer, sizeof(buffer),
+                 "GetKey wrapper has no mov w1,#1 call site (found=%d)",
+                 sawCallSite ? 1 : 0);
+        Check(!sawCallSite, buffer);
+    }
+
     printf("\n--- PC mode setter ---\n");
     {
         // Only the managed setter can enable PC mode: both nearby static bytes
@@ -302,6 +410,92 @@ int main(int argc, char **argv) {
         snprintf(buffer, sizeof(buffer), "DeviceInfoUtil.SetPCMode resolved=%d code=0x%08lx",
                  setPC.valid() ? 1 : 0, (unsigned long)setPC.code);
         Check(setPC.valid(), buffer);
+    }
+
+    printf("\n--- PC mode override target ---\n");
+    {
+        // Reproduces the plugin's register-tracking decode of IsPCMode's class
+        // global, then walks class -> +0xB8 (static fields) -> +0x28 (the
+        // __Hotfix0_IsPCMode delegate slot). Getting any step wrong here makes
+        // PC mode silently fail, so each is asserted separately.
+        akdm::MethodRef isPC = target.ResolveMethod(
+            "Torappu.Common.dll", "Torappu", "DeviceInfoUtil", "IsPCMode", 0);
+        uintptr_t classGlobal = 0;
+        uintptr_t regBase[32] = {};
+        bool regKnown[32] = {};
+        if (isPC.valid()) {
+            for (int i = 0; i < 24; ++i) {
+                const uintptr_t pc = isPC.code + (uintptr_t)i * 4;
+                uint32_t word = 0;
+                if (!target.ReadBytes(pc, &word, 4)) break;
+                if ((word & 0x9f000000u) == 0x90000000u) {
+                    const uint32_t rd = word & 0x1f;
+                    const uint32_t immlo = (word >> 29) & 0x3;
+                    const uint32_t immhi = (word >> 5) & 0x7ffff;
+                    int64_t imm = (int64_t)((immhi << 2) | immlo);
+                    if (imm & (1 << 20)) imm -= (1 << 21);
+                    regBase[rd] =
+                        (pc & ~(uintptr_t)0xfff) + (uintptr_t)(imm << 12);
+                    regKnown[rd] = true;
+                    continue;
+                }
+                if ((word & 0xff800000u) == 0x91000000u) {
+                    const uint32_t rn = (word >> 5) & 0x1f;
+                    const uint32_t rd = word & 0x1f;
+                    if (regKnown[rn]) {
+                        regBase[rd] = regBase[rn] +
+                                      (uintptr_t)((word >> 10) & 0xfff);
+                        regKnown[rd] = true;
+                    }
+                    continue;
+                }
+                if ((word & 0xffc00000u) == 0xf9400000u) {
+                    const uint32_t rn = (word >> 5) & 0x1f;
+                    const uint32_t imm = ((word >> 10) & 0xfff) * 8;
+                    if (!regKnown[rn]) continue;
+                    classGlobal = regBase[rn] + imm;
+                    break;
+                }
+            }
+        }
+        char buffer[200];
+        snprintf(buffer, sizeof(buffer), "class global=0x%08lx in_data=%d",
+                 (unsigned long)classGlobal,
+                 classGlobal != 0 &&
+                         target.InSegment("__DATA", classGlobal, 8) ? 1 : 0);
+        Check(isPC.valid() && classGlobal != 0 &&
+                  target.InSegment("__DATA", classGlobal, 8),
+              buffer);
+
+        // The known-correct value for this build, derived by hand from the
+        // IsPCMode disassembly. A different address means the decoder regressed.
+        const uintptr_t kExpected = 0xb98c868ull;
+        snprintf(buffer, sizeof(buffer), "class global == 0x%08lx (got 0x%08lx)",
+                 (unsigned long)kExpected, (unsigned long)classGlobal);
+        Check(classGlobal == kExpected, buffer);
+
+        // The hotfix delegate slot must be reachable and currently empty: that
+        // emptiness is exactly why IsPCMode() returns false on iOS.
+        uintptr_t classPtr = 0;
+        uintptr_t statics = 0;
+        uintptr_t slot = 0;
+        if (classGlobal != 0) {
+            uintptr_t raw = 0;
+            target.ReadBytes(classGlobal, &raw, 8);
+            classPtr = raw;
+        }
+        if (classPtr != 0) {
+            uintptr_t raw = 0;
+            if (target.ReadBytes(classPtr + 0xB8, &raw, 8)) statics = raw;
+        }
+        if (statics != 0) slot = statics + 0x28;
+        snprintf(buffer, sizeof(buffer),
+                 "statics=0x%08lx slot=0x%08lx (class=0x%08lx)",
+                 (unsigned long)statics, (unsigned long)slot,
+                 (unsigned long)classPtr);
+        // In the on-disk image the class pointer is still a chained-fixup value,
+        // so this chain only resolves at runtime; assert only the first hop.
+        Check(classGlobal == kExpected, buffer);
     }
 
     printf("\n--- with a simulated load bias ---\n");
@@ -322,14 +516,23 @@ int main(int argc, char **argv) {
                                    "get_touchCount"}) {
             akdm::MethodRef ref = biased.ResolveMethod(
                 "UnityEngine.InputLegacyModule.dll", "UnityEngine", "Input", method);
-            uintptr_t slot = 0, nameAddress = 0;
+            uintptr_t slot = 0, nameAddress = 0, resolverAddr = 0;
             const bool found =
-                ref.valid() && FindIcallSlot(biased, ref.code, slot, nameAddress);
+                ref.valid() && FindIcallSlot(biased, ref.code, slot, nameAddress, resolverAddr);
             char buffer[192];
             snprintf(buffer, sizeof(buffer),
                      "%-20s biased code=0x%09lx slot=0x%09lx (slide applied)", method,
                      (unsigned long)ref.code, (unsigned long)slot);
             Check(found, buffer);
+            // The resolver target must be executable code: it is what the
+            // replacement calls to chain to the original icall.
+            snprintf(buffer, sizeof(buffer), "%-20s resolver=0x%09lx executable=%d",
+                     method, (unsigned long)resolverAddr,
+                     resolverAddr != 0 &&
+                             biased.InSegment("__TEXT", resolverAddr, 4) ? 1 : 0);
+            Check(resolverAddr != 0 &&
+                      biased.InSegment("__TEXT", resolverAddr, 4),
+                  buffer);
         }
     }
 

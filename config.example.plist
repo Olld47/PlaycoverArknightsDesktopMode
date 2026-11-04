@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>EnablePCMode</key>
-    <false/>
+    <true/>
     <key>EnableInputHooks</key>
     <true/>
 </dict>

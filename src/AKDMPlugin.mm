@@ -62,6 +62,7 @@ std::atomic<unsigned long> gActivateAttempts{0};
 uintptr_t gUnitySlide = 0;
 std::atomic<int> gHooksInstalled{0};
 std::atomic<bool> gHooksComplete{false};
+std::atomic<bool> gTouchProbeReady{false};
 
 // ---------------------------------------------------------------------------
 // Image helpers
@@ -157,21 +158,29 @@ std::vector<uint8_t> LoadMetadata() {
 // method from a native input hook is unsafe (the IL2CPP runtime may not be
 // ready for that class yet, and it faults with a pointer-authentication error).
 // Writing the byte directly has the same effect with none of that risk.
-using SetPCModeFn = void (*)(bool);
-SetPCModeFn gSetPCMode = nullptr;
 
 // Invoked on the IL2CPP thread (from a hook) so the managed call is legal.
+// PC mode must be forced on: it is what routes input to the real key pipeline.
+//
+// TorappuPCInputHelper::OnProcess:
+//     +64  BL   DeviceInfoUtil.IsPCMode()
+//     +68  TBZ  w0, #0 -> 0x3050990      ; IsPCMode() == false
+//     +6c  B    TriggerStandAloneProcess ; IsPCMode() == true  <- real keyboard
+//     0x3050990: B _TriggerKeyProcessOnMobile ; only polls GetKeyDown(Escape)
+//
+// TriggerStandAloneProcess tail-calls TorappuKeyboardTriggerProcessor::
+// TriggerKeyProcess, which is the actual key-binding pipeline. So IsPCMode()
+// must return true, and __Hotfix0_IsPCMode is the only switch that makes it so
+// in this build (the managed setter routes through an unassembled strategy).
 void RequestPCMode() {
-    if (gPCRequested.exchange(true)) return;
-    if (gSetPCMode == nullptr) {
-        AKDM_LOG("pc mode: SetPCMode unavailable");
-        return;
+    if (gPCDone.load()) return;
+    if (gTarget == nullptr) return;
+    if (akdm::InstallPCModeOverride(*gTarget, gUnitySlide)) {
+        gPCDone.store(true);
+        // IsPCMode() is now forced true, so the next question is whether
+        // OnProcess even reaches that branch: it tests [statics+0x50] first.
+        akdm::ProbeInputModule(*gTarget);
     }
-    // Called from the Unity input hooks, i.e. on the IL2CPP thread while the
-    // runtime is live, which is the only safe place for a managed call.
-    gSetPCMode(true);
-    gPCDone.store(true);
-    AKDM_LOG("pc mode: DeviceInfoUtil.SetPCMode(true) invoked");
 }
 
 // ---------------------------------------------------------------------------
@@ -279,21 +288,19 @@ bool Activate() {
     target->SetSlide(unity.slide);
     AKDM_LOG("metadata parsed: %zu images", target->Images().size());
 
-    // Locate the static byte that DeviceInfoUtil.SetPCMode writes, by decoding
-    // that method's own `adrp`/`ldrb` pair. Writing the byte directly avoids
-    // calling managed code from an input hook.
-    SetPCModeFn setPCMode = nullptr;
     if (gConfig.enablePCMode) {
+        // PC mode is enabled by populating __Hotfix0_IsPCMode (see
+        // InstallPCModeOverride); the managed SetPCMode setter is a no-op in
+        // this build. Its resolution is logged only as a sanity check.
         akdm::MethodRef setPC = target->ResolveMethod(
             "Torappu.Common.dll", "Torappu", "DeviceInfoUtil", "SetPCMode", 1);
-        if (setPC.valid()) {
-            setPCMode = (SetPCModeFn)setPC.code;
-            AKDM_LOG("DeviceInfoUtil.SetPCMode at 0x%lx", (unsigned long)setPC.code);
-        } else {
-            AKDM_LOG("SetPCMode unresolved: %s", target->LastError().c_str());
-        }
+        AKDM_LOG("DeviceInfoUtil.SetPCMode resolved=%d (unused; hotfix slot is "
+                 "the real switch)",
+                 setPC.valid() ? 1 : 0);
     } else {
-        AKDM_LOG("pc mode disabled by config");
+        // Without PC mode the game never queries Input.GetKey, so the keyboard
+        // hooks cannot install and the plugin cannot do its job. Say so loudly.
+        AKDM_LOG("pc mode disabled by config: keyboard hooks will never install");
     }
 
     akdm::InputHookReport hooks;
@@ -319,20 +326,31 @@ bool Activate() {
     }
 
     gTarget = target;
-    gSetPCMode = setPCMode;
 
-    // Deferred: the managed setter must run on the IL2CPP thread, and the
-    // first Unity input query is the earliest point where we are on it.
-    if (gSetPCMode != nullptr) {
-        akdm::SetFirstCallAction(&RequestPCMode);
-        AKDM_LOG("pc mode: deferred to first input query");
+    // The override needs DeviceInfoUtil's class and static fields to exist, and
+    // writing them is only safe on the IL2CPP thread. The touch probe fires on
+    // that thread every frame, so it is the trigger; the maintenance loop also
+    // retries in case the class is still initialising.
+    if (gConfig.enablePCMode) {
+        // Every-call action: the static fields may not exist on the first few
+        // queries, so this must keep trying rather than fire once.
+        akdm::SetProbeAction(&RequestPCMode);
+        AKDM_LOG("pc mode: override armed on the touch probe (retrying)");
     }
 
     akdm::ProbeCursorHook(*gTarget, gUnitySlide);
+    // Locate Unity's internal key-state setter. The game never polls
+    // Input.GetKey on iOS (its PC input module is never assembled), so the
+    // hooks alone cannot deliver anything; this is the path that actually
+    // reaches Unity's own input state.
+    akdm::FindUnitySetKeyState(*gTarget);
+    if (!akdm::InstallTouchProbe(*gTarget, gUnitySlide)) {
+        AKDM_LOG("touch probe deferred (slot not resolved yet)");
+    }
     akdm::AttachHardwareObservers();
 
     gHooksInstalled.store(hooks.installed);
-    gHooksComplete.store(hooks.installed >= 13);
+    gHooksComplete.store(hooks.installed >= 3);
     gActive.store(true);
     gActivated.store(true);
     AKDM_LOG("plugin active=1 after %lu attempt(s)", attempt);
@@ -376,16 +394,24 @@ void SlowTick() {
     // Retry hook installation: a slot only becomes installable once the game
     // has used that Unity wrapper at least once, so the first pass usually
     // defers most of them.
+    if (gTarget != nullptr && !gTouchProbeReady.load()) {
+        if (akdm::InstallTouchProbe(*gTarget, gUnitySlide)) {
+            gTouchProbeReady.store(true);
+        }
+    }
     if (gTarget != nullptr && !gHooksComplete.load()) {
         akdm::InputHookReport again = akdm::InstallInputHooks(*gTarget, gUnitySlide);
         if (again.installed > 0) {
             const int total = gHooksInstalled.fetch_add(again.installed) +
                               again.installed;
             AKDM_LOG("hook retry: +%d installed (total %d)", again.installed, total);
-            if (total >= 13) gHooksComplete.store(true);
+            if (total >= 3) gHooksComplete.store(true);
         }
     }
     akdm::AttachHardwareObservers();
+    // Keep sampling: if the game assembles its PC input module at any point the
+    // gate flips and the log records it, with no hook installed.
+    if (gTarget != nullptr && gPCDone.load()) akdm::ProbeInputModule(*gTarget);
 
     akdm::InputCounters counters = akdm::SnapshotCounters();
     AKDM_LOG("tick=%lu keys=%llu pc=%d",
