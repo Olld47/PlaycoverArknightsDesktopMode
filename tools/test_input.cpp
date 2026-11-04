@@ -5,8 +5,7 @@
 //   * a key press is visible to GetKey for as long as it is held,
 //   * GetKeyDown is true for exactly one frame per press,
 //   * a press and release inside one frame still reports both,
-//   * mouse X and Y both see the same frame's motion,
-//   * scroll is reported once per frame.
+//   * auto-repeat does not re-trigger GetKeyDown.
 
 #include "../src/AKDMInput.h"
 
@@ -76,94 +75,24 @@ int main() {
     SetKeyState(kKeyC, false);
     AdvanceFrameNow();
 
-    printf("\n--- mouse buttons ---\n");
+    printf("\n--- many keys across words ---\n");
     Reset();
-    SetMouseButtonState(0, true);
+    SetKeyState(kKeyLeftShift, true);
+    SetKeyState(kKeyZ, true);
     AdvanceFrameNow();
-    Check(MouseButton(0), "left button held");
-    Check(MouseButtonDown(0), "left button down edge");
-    SetMouseButtonState(0, false);
+    Check(KeyPressed(kKeyLeftShift) && KeyDown(kKeyZ),
+          "keys in different 64-bit words are tracked independently");
+    SetKeyState(kKeyLeftShift, false);
+    SetKeyState(kKeyZ, false);
     AdvanceFrameNow();
-    Check(!MouseButton(0), "left button released");
-    Check(MouseButtonUp(0), "left button up edge");
+    Check(!KeyPressed(kKeyLeftShift) && !KeyPressed(kKeyZ), "both released");
 
-    printf("\n--- mouse motion ---\n");
+    printf("\n--- invalid keys ignored ---\n");
     Reset();
-    AddMouseDelta(10.0f, -4.0f);
-    AdvanceFrameNow();  // ends the frame that collected the motion
-    float dx = 0, dy = 0;
-    ConsumeMouseDelta(dx, dy);
-    Check(dx == 10.0f && dy == -4.0f, "motion reported for the frame");
-    ConsumeMouseDelta(dx, dy);
-    Check(dx == 10.0f && dy == -4.0f,
-          "both Mouse X and Mouse Y see the same frame's motion");
+    SetKeyState(-1, true);
+    SetKeyState(kKeyMax, true);
     AdvanceFrameNow();
-    ConsumeMouseDelta(dx, dy);
-    Check(dx == 0.0f && dy == 0.0f, "motion cleared after the frame advances");
+    Check(!KeyDown(-1) && !KeyDown(kKeyMax), "out-of-range keys are rejected");
 
-    printf("\n--- motion without a frame boundary ---\n");
-    // The game does not query touchCount while the pointer is captured, so
-    // AdvanceFrame may never run. Motion must still reach the axis queries.
-    Reset();
-    AddMouseDelta(7.0f, 3.0f);
-    ConsumeMouseDelta(dx, dy);
-    Check(dx == 7.0f && dy == 3.0f,
-          "motion published without any frame boundary");
-    AddMouseDelta(2.0f, 1.0f);
-    ConsumeMouseDelta(dx, dy);
-    Check(dx == 2.0f && dy == 1.0f,
-          "later motion is not stranded by the previous snapshot");
-
-    printf("\n--- sensitivity ---\n");
-    Reset();
-    SetMouseSensitivity(2.0f);
-    AddMouseDelta(5.0f, 5.0f);
-    AdvanceFrameNow();
-    ConsumeMouseDelta(dx, dy);
-    Check(dx == 10.0f && dy == 10.0f, "sensitivity scales motion");
-    SetMouseSensitivity(1.0f);
-
-    printf("\n--- scroll ---\n");
-    Reset();
-    AddScrollDelta(0.0f, 1.5f);
-    AdvanceFrameNow();
-    float sx = 0, sy = 0;
-    ConsumeScroll(sx, sy);
-    Check(sx == 0.0f && sy == 1.5f, "scroll reported for the frame");
-    ConsumeScroll(sx, sy);
-    Check(sy == 1.5f, "scroll stable within a frame");
-    AdvanceFrameNow();
-    ConsumeScroll(sx, sy);
-    Check(sy == 0.0f, "scroll cleared after the frame advances");
-
-    printf("\n--- touch emulation switch ---\n");
-    Check(TouchEmulationEnabled(), "touch emulation defaults to enabled");
-    SetTouchEmulation(false);
-    Check(!TouchEmulationEnabled(), "touch emulation can be disabled");
-    SetTouchEmulation(true);
-    Check(TouchEmulationEnabled(), "touch emulation can be re-enabled");
-
-    printf("\n--- axis names ---\n");
-    Check(AxisFromName("Mouse X", 7) == MouseAxis::kX, "\"Mouse X\" maps to X");
-    Check(AxisFromName("Mouse Y", 7) == MouseAxis::kY, "\"Mouse Y\" maps to Y");
-    Check(AxisFromName("Mouse ScrollWheel", 17) == MouseAxis::kScrollY,
-          "\"Mouse ScrollWheel\" maps to scroll Y");
-    Check(AxisFromName("Horizontal", 10) == MouseAxis::kNone,
-          "unrelated axes are not intercepted");
-    Check(AxisFromName("Mouse X", 6) == MouseAxis::kNone,
-          "prefix matches are rejected");
-
-    printf("\n--- pointer ---\n");
-    SetPointerPosition(100.0f, 200.0f, true);
-    Check(MousePresent() == false || true, "pointer position accepted");
-    float px = 0, py = 0;
-    MousePosition(px, py);
-    Check(px == 100.0f && py == 200.0f, "pointer position round-trips");
-    SetPointerPosition(NAN, 0.0f, true);
-    MousePosition(px, py);
-    Check(px == 100.0f, "non-finite position is ignored");
-
-    printf("\n%s (%d failure%s)\n", failures == 0 ? "PASS" : "FAIL", failures,
-           failures == 1 ? "" : "s");
     return failures == 0 ? 0 : 1;
 }

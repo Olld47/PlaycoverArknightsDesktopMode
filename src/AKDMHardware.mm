@@ -18,7 +18,6 @@ namespace {
 
 const void *kKeyboardWrapperKey = &kKeyboardWrapperKey;
 const void *kMouseMoveWrapperKey = &kMouseMoveWrapperKey;
-const void *kMouseButtonWrapperKey = &kMouseButtonWrapperKey;
 
 // GCKeyCode -> Unity KeyCode. Built once at attach time.
 struct KeyMapEntry {

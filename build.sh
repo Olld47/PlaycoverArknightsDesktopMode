@@ -34,7 +34,6 @@ SOURCES=(
   src/AKDMInput.cpp
   src/AKDMHardware.mm
   src/AKDMHook.cpp
-  src/AKDMPointer.mm
   src/AKDMPlugin.mm
 )
 
@@ -50,7 +49,6 @@ xcrun clang++ \
   -iframework "$IOS_SUPPORT" \
   -F "$IOS_SUPPORT" \
   -framework Foundation -framework UIKit -framework GameController \
-  -framework AppKit \
   -install_name '@executable_path/Frameworks/libAKDMDesktopMode.dylib' \
   -Wl,-no_warn_duplicate_libraries \
   "${SOURCES[@]}" \

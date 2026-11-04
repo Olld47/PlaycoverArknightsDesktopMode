@@ -38,17 +38,8 @@ Config LoadConfig() {
         config.enablePCMode = readBool(@"EnablePCMode", config.enablePCMode);
         config.enableInputHooks =
             readBool(@"EnableInputHooks", config.enableInputHooks);
-        config.enableTouchEmulation =
-            readBool(@"EnableTouchEmulation", config.enableTouchEmulation);
-
-        id sensitivity = dictionary[@"MouseSensitivity"];
-        if ([sensitivity isKindOfClass:[NSNumber class]]) {
-            const double value = [sensitivity doubleValue];
-            if (value > 0.05 && value < 20.0) config.mouseSensitivity = value;
-        }
-        AKDM_LOG("config: pc=%d hooks=%d touch=%d sensitivity=%.2f",
-                 config.enablePCMode ? 1 : 0, config.enableInputHooks ? 1 : 0,
-                 config.enableTouchEmulation ? 1 : 0, config.mouseSensitivity);
+        AKDM_LOG("config: pc=%d hooks=%d", config.enablePCMode ? 1 : 0,
+                 config.enableInputHooks ? 1 : 0);
     }
     return config;
 }

@@ -27,7 +27,6 @@
 #include "AKDMHardware.h"
 #include "AKDMHook.h"
 #include "AKDMInput.h"
-#include "AKDMPointer.h"
 #include "AKDMTarget.h"
 
 namespace {
@@ -212,7 +211,6 @@ void Configure() {
     AKDM_LOG("%s starting", kPluginVersion);
 
     gConfig = akdm::LoadConfig();
-    akdm::SetMouseSensitivity((float)gConfig.mouseSensitivity);
 
     if (!IsSupportedBundle()) {
         AKDM_LOG("not Arknights; plugin inactive");

@@ -6,9 +6,5 @@
     <false/>
     <key>EnableInputHooks</key>
     <true/>
-    <key>EnableTouchEmulation</key>
-    <true/>
-    <key>MouseSensitivity</key>
-    <real>1.0</real>
 </dict>
 </plist>
