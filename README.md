@@ -78,11 +78,11 @@ br   x1
 | `config.example.plist` | 可选配置模板，见[配置](#配置) |
 | `SHA256SUMS` | 校验和，验证下载完整性 |
 
-命令行下载最新版并校验：
+命令行下载最新版并校验（`--pattern` 需覆盖全部文件，`SHA256SUMS` 才能完整校验）：
 
 ```sh
 gh release download --repo Olld47/PlaycoverArknightsDesktopMode \
-  --pattern 'libAKDMDesktopMode*.dylib' --pattern 'SHA256SUMS' --clobber
+  --pattern '*' --clobber
 shasum -a 256 -c SHA256SUMS
 ```
 
