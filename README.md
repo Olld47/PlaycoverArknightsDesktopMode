@@ -75,36 +75,17 @@ br   x1
 | --- | --- |
 | `libAKDMDesktopMode.dylib` | 正式版（无日志），**日常使用选这个** |
 | `libAKDMDesktopMode-debug.dylib` | 带日志版，排查问题时使用；日志见[下文](#日志) |
-| `config.example.plist` | 可选配置模板，见[配置](#配置) |
-| `SHA256SUMS` | 校验和，验证下载完整性 |
 
-命令行下载最新版并校验（`--pattern` 需覆盖全部文件，`SHA256SUMS` 才能完整校验）：
-
-```sh
-gh release download --repo Olld47/PlaycoverArknightsDesktopMode \
-  --pattern '*' --clobber
-shasum -a 256 -c SHA256SUMS
-```
-
-没有 `gh` 时直接从 Release 页面点击文件下载。
-
-**注意**：Release 由 CI 在 macOS runner 上构建并 ad-hoc 签名，与自行构建产物的
-哈希不同（签名含时间戳）。以 Release 内的 `SHA256SUMS` 为准校验下载文件。
+各文件的 SHA256 校验和写在 Release 页面的说明里（CI 构建时生成）。
+Release 由 CI 在 macOS runner 上构建并 ad-hoc 签名，哈希与自行构建不同（签名含
+时间戳），因此以 Release 页面列出的校验和为准。
 
 ## 安装
 
-1. 需要 macOS + Xcode Command Line Tools。
-2. 从 [Releases](https://github.com/Olld47/PlaycoverArknightsDesktopMode/releases/latest) 下载 `libAKDMDesktopMode.dylib`，或自行构建：
-
-   ```sh
-   zsh build.sh
-   ```
-
-   产物：`libAKDMDesktopMode.dylib`。
-
-3. PlayCover 里选明日方舟 → 设置 → 杂项 → 添加插件 → 选择该 dylib。
-4. **关闭 PlayCover 的所有键盘映射**（否则会与游戏原生输入冲突）。
-5. 启动游戏。
+1. 从 [Releases](https://github.com/Olld47/PlaycoverArknightsDesktopMode/releases/latest) 下载 `libAKDMDesktopMode.dylib`（也可自行构建，见[本地开发构建](#本地开发构建)）。
+2. PlayCover 里选明日方舟 → 设置 → 杂项 → 添加插件 → 选择该 dylib。
+3. **关闭 PlayCover 的所有键盘映射**（否则会与游戏原生输入冲突）。
+4. 启动游戏。
 
 ## 键位
 
@@ -152,7 +133,21 @@ AKDM_ENABLE_LOGGING=1 zsh build.sh
 > 按键无反应时优先看 `setkey`：没有 `UnitySetKeyState at ...` 这一行，说明指令模式
 > 未命中（多为游戏更新导致函数布局变化）。
 
-## 验证
+## 本地开发构建
+
+### 构建
+
+需要 macOS + Xcode Command Line Tools（含 Mac Catalyst 框架）。
+
+```sh
+zsh build.sh                 # release（无日志）
+AKDM_ENABLE_LOGGING=1 zsh build.sh   # 带日志，用于诊断
+```
+
+产物：`libAKDMDesktopMode.dylib`（ad-hoc 签名，`@executable_path/Frameworks/` install name，
+即 PlayCover 注入所要求的形态）。
+
+### 测试与验证
 
 ```sh
 zsh tools/test.sh
@@ -169,6 +164,12 @@ zsh tools/test.sh
 
 `tools/validate_target.cpp` 与插件共用 `AKDMTarget`，验证每个方法都能解析到真实可执行代码；
 `tools/validate_hooks.cpp` 验证 icall 槽的位置与可写性，并在**模拟加载偏移**下重跑。
+
+这两个验证器需要本机安装的游戏 bundle（读取 `global-metadata.dat` 与 UnityFramework，
+二者不可再分发），默认路径为
+`~/Library/Containers/io.playcover.PlayCover/Applications/com.hypergryph.arknights.app`，
+也可作为第一个参数传入。因此 CI 只运行单元测试与构建，不运行这两个验证器
+（见 `.github/workflows/release.yml`）。
 
 ### 源码结构
 
