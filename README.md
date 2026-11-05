@@ -67,10 +67,34 @@ br   x1
 插件把槽里的指针换成自己的实现。这是**纯数据写入**：不改任何指令、不需要跳板、
 进程退出即消失。槽里原本的值（若已被游戏解析）保留为回退路径。
 
+## 下载
+
+在 [Releases](https://github.com/Olld47/PlaycoverArknightsDesktopMode/releases/latest) 页面下载：
+
+| 文件 | 用途 |
+| --- | --- |
+| `libAKDMDesktopMode.dylib` | 正式版（无日志），**日常使用选这个** |
+| `libAKDMDesktopMode-debug.dylib` | 带日志版，排查问题时使用；日志见[下文](#日志) |
+| `config.example.plist` | 可选配置模板，见[配置](#配置) |
+| `SHA256SUMS` | 校验和，验证下载完整性 |
+
+命令行下载最新版并校验：
+
+```sh
+gh release download --repo Olld47/PlaycoverArknightsDesktopMode \
+  --pattern 'libAKDMDesktopMode*.dylib' --pattern 'SHA256SUMS' --clobber
+shasum -a 256 -c SHA256SUMS
+```
+
+没有 `gh` 时直接从 Release 页面点击文件下载。
+
+**注意**：Release 由 CI 在 macOS runner 上构建并 ad-hoc 签名，与自行构建产物的
+哈希不同（签名含时间戳）。以 Release 内的 `SHA256SUMS` 为准校验下载文件。
+
 ## 安装
 
 1. 需要 macOS + Xcode Command Line Tools。
-2. 构建：
+2. 从 [Releases](https://github.com/Olld47/PlaycoverArknightsDesktopMode/releases/latest) 下载 `libAKDMDesktopMode.dylib`，或自行构建：
 
    ```sh
    zsh build.sh

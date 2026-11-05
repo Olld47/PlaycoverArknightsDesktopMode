@@ -76,8 +76,10 @@ jobs:
           cp libAKDMDesktopMode.dylib dist/
           cp libAKDMDesktopMode-debug.dylib dist/libAKDMDesktopMode-debug.dylib
           cp config.example.plist dist/
-          shasum -a 256 dist/* > dist/SHA256SUMS
-          cat dist/SHA256SUMS
+          # Generate checksums from inside dist so the listed paths are bare
+          # filenames: `shasum -a 256 -c SHA256SUMS` then works wherever the
+          # files are extracted, without a dist/ prefix.
+          cd dist && shasum -a 256 * > SHA256SUMS && cat SHA256SUMS
 
       - name: Upload artifacts (every run)
         uses: actions/upload-artifact@v4
