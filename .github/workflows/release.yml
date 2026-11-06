@@ -103,6 +103,11 @@ jobs:
           SHA_DEBUG: ${{ steps.assets.outputs.sha_debug }}
           REPO: ${{ github.repository }}
         run: |
+          # Build the full body up front. gh release create attaches assets by
+          # first creating a DRAFT and only publishing after every upload
+          # succeeds; a later `gh release edit` on that draft can leave it
+          # unpublished. So there must be exactly one edit, with --draft=false.
+          PREV_TAG=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
           cat > body.md <<EOF
           ## 校验和
 
@@ -115,19 +120,23 @@ jobs:
           > Release 由 CI 在 macOS runner 上构建并 ad-hoc 签名，哈希与自行构建不同（签名含
           > 时间戳）。校验下载文件：\`shasum -a 256 <下载的 dylib>\`，与上表比对。
           EOF
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes \
-            --notes-file body.md \
-            libAKDMDesktopMode.dylib \
-            libAKDMDesktopMode-debug.dylib
-          # --notes-file replaces the generated body, so append the changelog
-          # link that --generate-notes would have provided.
-          PREV_TAG=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
           if [ -n "$PREV_TAG" ]; then
             {
               echo ""
               echo "**Full Changelog**: https://github.com/$REPO/compare/$PREV_TAG...$GITHUB_REF_NAME"
             } >> body.md
-            gh release edit "$GITHUB_REF_NAME" --notes-file body.md
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --verify-tag \
+            --notes-file body.md \
+            libAKDMDesktopMode.dylib \
+            libAKDMDesktopMode-debug.dylib
+          # Explicitly publish: attaching assets leaves a draft in some gh
+          # versions, and --draft=false is idempotent for an already-live release.
+          gh release edit "$GITHUB_REF_NAME" --draft=false
+          # Fail the job if it is somehow still a draft.
+          if gh release view "$GITHUB_REF_NAME" --json isDraft --jq .isDraft | grep -q true; then
+            echo "release is still a draft after publish"
+            exit 1
           fi
