@@ -103,13 +103,14 @@ jobs:
           cat > body.md <<EOF
           ## 校验和
 
-          \`\`\`text
-          libAKDMDesktopMode.dylib        sha256 $SHA_MAIN
-          libAKDMDesktopMode-debug.dylib  sha256 $SHA_DEBUG
-          \`\`\`
+          | 文件 | SHA256 |
+          | --- | --- |
+          | \`libAKDMDesktopMode.dylib\` | \`$SHA_MAIN\` |
+          | \`libAKDMDesktopMode-debug.dylib\` | \`$SHA_DEBUG\` |
 
-          Release 由 CI 在 macOS runner 上构建并 ad-hoc 签名，哈希与自行构建不同（签名含时间戳）。
-          校验下载文件：\`shasum -a 256 <下载的 dylib>\`，与上表比对。
+          > [!NOTE]
+          > Release 由 CI 在 macOS runner 上构建并 ad-hoc 签名，哈希与自行构建不同（签名含
+          > 时间戳）。校验下载文件：\`shasum -a 256 <下载的 dylib>\`，与上表比对。
           EOF
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
