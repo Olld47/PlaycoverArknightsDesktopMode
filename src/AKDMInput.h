@@ -85,6 +85,15 @@ constexpr int32_t kKeyWordCount = (kKeyMax + 63) / 64;
 
 void SetKeyState(int32_t unityKey, bool down);
 
+// Publishes the host cursor position in Unity screen pixels (origin at the
+// bottom-left of the render surface). The game draws its own PC cursor from
+// Input.mousePosition, which on iOS only changes when a touch is synthesised —
+// so without this the in-game cursor jumps only on click.
+void SetCursorPosition(float x, float y);
+// Marks whether a cursor position has been published at least once.
+bool CursorPositionValid();
+void GetCursorPosition(float &x, float &y);
+
 // ---------------------------------------------------------------------------
 // Query surface (called from the Unity icall replacements)
 // ---------------------------------------------------------------------------

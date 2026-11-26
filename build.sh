@@ -31,9 +31,11 @@ SOURCES=(
   src/AKDMCompat.mm
   src/AKDMConfig.mm
   src/AKDMTarget.cpp
+  src/AKDMMapping.cpp
   src/AKDMInput.cpp
   src/AKDMHardware.mm
   src/AKDMHook.cpp
+  src/AKDMCursor.mm
   src/AKDMUnityKey.mm
   src/AKDMPlugin.mm
 )
@@ -42,6 +44,7 @@ mkdir -p build
 
 xcrun clang++ \
   -std=c++17 -O2 -fobjc-arc -fblocks -dynamiclib \
+  -Wformat -Wformat-security \
   -target arm64-apple-ios15.0-macabi \
   -isysroot "$SDK" \
   -I"$SDK/usr/include/c++/v1" \

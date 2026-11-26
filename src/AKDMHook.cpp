@@ -107,10 +107,13 @@ bool FindSlot(Target &target, uintptr_t code, SlotInfo &info) {
 }
 
 IcallTarget gGetKey, gGetKeyDown, gGetKeyUp;
+using MouseButtonFn = bool (*)(int32_t);
+IcallTarget gMousePosition, gMousePresent, gMouseButtonDown;
 
-// Restores every slot this module replaced. Used when installation fails, so
 // the game is never left with a partially wired input path.
-void UndoSlots() {    IcallTarget *all[] = {&gGetKey, &gGetKeyDown, &gGetKeyUp};
+void UndoSlots() {
+    IcallTarget *all[] = {&gGetKey, &gGetKeyDown, &gGetKeyUp, &gMousePosition,
+                          &gMousePresent, &gMouseButtonDown};
     for (IcallTarget *target : all) {
         if (target->slot == 0) continue;
         WritePointer(target->slot, target->previous);
@@ -174,6 +177,58 @@ inline void RunFirstCallAction() {
 // natively, and hooking those queries only competed with that pipeline.
 
 
+// The mouse position slot holds the *_Injected* implementation: the managed
+// wrapper passes a stack slot and loads a Vector3 from it, so the icall takes an
+// out pointer rather than returning by value.
+using GetMousePositionFn = void (*)(float *out3);
+using GetBoolFn = bool (*)(void);
+
+// The game draws its own PC cursor from Input.mousePosition. On iOS that value
+// only changes when a touch is synthesised, which is why the in-game pointer
+// moved only on click. Answering from the host cursor makes it track the mouse.
+void ReplacementMousePosition(float *out) {
+    if (gActive.load() && out != nullptr) {
+        // Sample the engine's own answer on the first few calls. Comparing it
+        // with ours shows the coordinate space the game actually uses, which is
+        // what a scale error has to be measured against rather than guessed.
+        // Read the cursor *now* rather than returning a polled sample: a cached
+        // value would lag the mouse by up to one timer tick, which is exactly
+        // the input latency this must not introduce. The read is a single
+        // objc_msgSend plus arithmetic against cached geometry.
+        float x = 0.0f, y = 0.0f;
+        if (ReadCursorPosition(x, y)) {
+            SetCursorPosition(x, y);
+            out[0] = x;
+            out[1] = y;
+            out[2] = 0.0f;  // Vector3.z
+            // Log the value the game actually receives, sampled slowly so a
+            // long sweep is captured without flooding the file.
+            static std::atomic<int> traceCount{0};
+            if (traceCount.fetch_add(1) % 120 == 0)
+                AKDM_LOG("served mousePosition=(%.1f,%.1f)", (double)x,
+                         (double)y);
+            return;
+        }
+        if (CursorPositionValid()) {
+            GetCursorPosition(x, y);
+            out[0] = x;
+            out[1] = y;
+            out[2] = 0.0f;
+            return;
+        }
+    }
+    GetMousePositionFn original = Original<GetMousePositionFn>(gMousePosition);
+    if (original) original(out);
+}
+
+// Reports a mouse so PC-mode code paths treat the pointer as present even
+// before the first click.
+bool ReplacementMousePresent() {
+    if (gActive.load() && CursorPositionValid()) return true;
+    GetBoolFn original = Original<GetBoolFn>(gMousePresent);
+    return original ? original() : false;
+}
+
 using GetKeyFn = bool (*)(int32_t);
 
 bool ReplacementGetKey(int32_t key) {
@@ -188,6 +243,19 @@ bool ReplacementGetKeyDown(int32_t key) {
     if (gActive.load() && KeyDown(key)) return true;
     GetKeyFn original = Original<GetKeyFn>(gGetKeyDown);
     return original ? original(key) : false;
+}
+
+void ReplacementMouseButtonDown(int32_t button) {
+    MouseButtonFn original = Original<MouseButtonFn>(gMouseButtonDown);
+    const bool pressed = original ? original(button) : false;
+    if (!pressed) return;
+    float x = 0.0f, y = 0.0f;
+    if (ReadCursorPosition(x, y)) {
+        float screenX = 0.0f, screenY = 0.0f;
+        GetCursorScreenPosition(screenX, screenY);
+        AKDM_LOG("CLICK button=%d | host screen=(%.1f,%.1f) | unity sent=(%.1f,%.1f)",
+                 button, (double)screenX, (double)screenY, (double)x, (double)y);
+    }
 }
 
 bool ReplacementGetKeyUp(int32_t key) {
@@ -284,8 +352,15 @@ InputHookReport InstallInputHooks(Target &target, uintptr_t slide) {
     // no data source on iOS, so that is all this plugin needs to supply.
     const Spec specs[] = {
         {"GetKey", (void *)ReplacementGetKey, &gGetKey, &report.getKey},
+        {"GetMouseButtonDown", (void *)ReplacementMouseButtonDown,
+         &gMouseButtonDown, nullptr},
         {"GetKeyDown", (void *)ReplacementGetKeyDown, &gGetKeyDown, &report.getKeyDown},
         {"GetKeyUp", (void *)ReplacementGetKeyUp, &gGetKeyUp, &report.getKeyUp},
+        // Cursor position: the game renders its own pointer from this value.
+        {"get_mousePosition", (void *)ReplacementMousePosition, &gMousePosition,
+         &report.mousePosition},
+        {"get_mousePresent", (void *)ReplacementMousePresent, &gMousePresent,
+         &report.mousePresent},
     };
 
     for (const Spec &spec : specs) {
@@ -398,11 +473,95 @@ bool ProbeInputModule(Target &target) {
     return false;
 }
 
+namespace {
+
+// UnityEngine.Screen.get_width/get_height: observed only, so the cursor can be
+// mapped into the same pixel space the game uses.
+using ScreenGetterFn = int32_t (*)(void);
+IcallTarget gScreenWidth, gScreenHeight;
+std::atomic<int32_t> gScreenWidthValue{0}, gScreenHeightValue{0};
+
+// Each axis is published on its own. Requiring both to be non-zero dropped the
+// update entirely: the game calls get_width before get_height, so height was
+// still 0 and the render size never reached the cursor mapping — the scale then
+// stayed on its fallback and drifted.
+void PublishScreenWidth() {
+    const int32_t width = gScreenWidthValue.load();
+    const int32_t height = gScreenHeightValue.load();
+    if (width > 0) SetRenderWidth((float)width);
+    if (height > 0) SetRenderHeight((float)height);
+}
+
+void PublishScreenHeight() {
+    PublishScreenWidth();
+}
+
+int32_t ReplacementScreenWidth() {
+    ScreenGetterFn original = Original<ScreenGetterFn>(gScreenWidth);
+    const int32_t value = original ? original() : 0;
+    if (value > 0 && gScreenWidthValue.exchange(value) != value) {
+        static std::atomic<int> logged{0};
+        if (logged.fetch_add(1) < 3)
+            AKDM_LOG("screen: engine width=%d height=%d", value,
+                     gScreenHeightValue.load());
+        PublishScreenWidth();
+    }
+    return value;
+}
+
+int32_t ReplacementScreenHeight() {
+    ScreenGetterFn original = Original<ScreenGetterFn>(gScreenHeight);
+    const int32_t value = original ? original() : 0;
+    if (value > 0 && gScreenHeightValue.exchange(value) != value)
+        PublishScreenHeight();
+    return value;
+}
+
+// Installs a slot hook for a method in an arbitrary image/class. Unlike the
+// probe helper above this accepts a zero slot: the Screen wrappers have usually
+// not been called yet when we install.
+bool InstallSlotForScreen(Target &target, const char *image, const char *ns,
+                          const char *klass, const char *method,
+                          void *replacement, IcallTarget &icall) {
+    MethodRef ref = target.ResolveMethod(image, ns, klass, method);
+    if (!ref.valid()) {
+        AKDM_LOG("hook %s: %s", method, target.LastError().c_str());
+        return false;
+    }
+    SlotInfo info;
+    if (!FindSlot(target, ref.code, info)) {
+        AKDM_LOG("hook %s: icall slot not found", method);
+        return false;
+    }
+    if (!target.InSegment("__DATA", info.slot, sizeof(uintptr_t))) return false;
+    if (icall.slot != 0) return true;  // already ours
+
+    uintptr_t existing = 0;
+    if (!ReadValue(info.slot, existing)) return false;
+    icall.resolve = info.resolve;
+    icall.name = info.name;
+    icall.cached.store((void *)existing);
+    if (!WritePointer(info.slot, (uintptr_t)replacement)) return false;
+    icall.slot = info.slot;
+    icall.previous = existing;
+    AKDM_LOG("hook %s: slot 0x%lx <- %p (existing %p)", method,
+             (unsigned long)info.slot, replacement, (void *)existing);
+    return true;
+}
+
+} // namespace
+
 bool InstallScreenHooks(Target &target, uintptr_t slide) {
-    // Removed with the pointer module: nothing consumes Screen size any more.
-    (void)target;
     (void)slide;
-    return false;
+    bool any = false;
+    any |= InstallSlotForScreen(target, "UnityEngine.CoreModule.dll",
+                                "UnityEngine", "Screen", "get_width",
+                                (void *)ReplacementScreenWidth, gScreenWidth);
+    any |= InstallSlotForScreen(target, "UnityEngine.CoreModule.dll",
+                                "UnityEngine", "Screen", "get_height",
+                                (void *)ReplacementScreenHeight, gScreenHeight);
+    if (any) AKDM_LOG("screen hooks installed (cursor mapping uses them)");
+    return any;
 }
 
 // ---------------------------------------------------------------------------

@@ -25,6 +25,12 @@ std::atomic<uint64_t> gKeyUpPending[kKeyWordCount];
 
 std::atomic<uint64_t> gKeyEvents{0}, gKeyDownEvents{0}, gKeyUpEvents{0};
 
+// Host cursor position in Unity screen pixels. Written by the platform layer
+// (main thread) and read by the get_mousePosition replacement (Unity thread).
+std::atomic<float> gCursorX{0.0f};
+std::atomic<float> gCursorY{0.0f};
+std::atomic<bool> gCursorValid{false};
+
 inline bool ValidKey(int32_t key) { return key >= 0 && key < kKeyMax; }
 
 inline void SetBit(std::atomic<uint64_t> *words, int32_t key, bool value) {
@@ -63,6 +69,22 @@ void AdvanceFrameNow() {
         gKeyDownEdge[i].store(gKeyDownPending[i].exchange(0));
         gKeyUpEdge[i].store(gKeyUpPending[i].exchange(0));
     }
+}
+
+void SetCursorPosition(float x, float y) {
+    if (!std::isfinite(x) || !std::isfinite(y)) return;
+    gCursorX.store(x, std::memory_order_relaxed);
+    gCursorY.store(y, std::memory_order_relaxed);
+    gCursorValid.store(true, std::memory_order_release);
+}
+
+bool CursorPositionValid() {
+    return gCursorValid.load(std::memory_order_acquire);
+}
+
+void GetCursorPosition(float &x, float &y) {
+    x = gCursorX.load(std::memory_order_relaxed);
+    y = gCursorY.load(std::memory_order_relaxed);
 }
 
 void SetKeyState(int32_t unityKey, bool down) {

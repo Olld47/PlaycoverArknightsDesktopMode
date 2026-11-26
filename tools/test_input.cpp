@@ -87,6 +87,17 @@ int main() {
     AdvanceFrameNow();
     Check(!KeyPressed(kKeyLeftShift) && !KeyPressed(kKeyZ), "both released");
 
+    printf("\n--- cursor position ---\n");
+    Check(!CursorPositionValid(), "no cursor position before one is published");
+    SetCursorPosition(1234.0f, 567.0f);
+    float cx = 0.0f, cy = 0.0f;
+    GetCursorPosition(cx, cy);
+    Check(CursorPositionValid(), "published position becomes valid");
+    Check(cx == 1234.0f && cy == 567.0f, "position round-trips");
+    SetCursorPosition(NAN, 1.0f);
+    GetCursorPosition(cx, cy);
+    Check(cx == 1234.0f && cy == 567.0f, "non-finite coordinates are ignored");
+
     printf("\n--- invalid keys ignored ---\n");
     Reset();
     SetKeyState(-1, true);
