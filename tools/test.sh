@@ -25,9 +25,14 @@ xcrun clang++ -std=c++17 -O1 -isysroot "$SDK" -I"$CXX_INC" -Isrc \
 
 xcrun clang++ -std=c++17 -O1 -isysroot "$SDK" -I"$CXX_INC" -Isrc \
   tools/test_input.cpp src/AKDMInput.cpp -o build/test_input
+xcrun clang++ -std=c++17 -O1 -isysroot "$SDK" -I"$CXX_INC" -Isrc \
+  tools/test_mapping.cpp src/AKDMMapping.cpp -o build/test_mapping
 
 print "\n== input state machine"
 ./build/test_input
+
+print "\n== cursor mapping"
+./build/test_mapping
 
 print "\n== symbol resolution"
 ./build/validate_target "$APP"

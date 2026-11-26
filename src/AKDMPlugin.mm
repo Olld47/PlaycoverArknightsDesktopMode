@@ -31,7 +31,7 @@
 
 namespace {
 
-const char kPluginVersion[] __attribute__((used)) = "AKDM 0.1.0";
+const char kPluginVersion[] __attribute__((used)) = "AKDM 0.1.4";
 
 // Supported bundle identifiers. The game ships several regional builds that
 // share the same IL2CPP layout.
@@ -57,6 +57,7 @@ std::mutex gActivateLock;
 akdm::Config gConfig;
 akdm::Target *gTarget = nullptr;
 dispatch_source_t gTimer = nullptr;
+dispatch_source_t gCursorTimer = nullptr;
 std::atomic<unsigned long> gTicks{0};
 std::atomic<unsigned long> gActivateAttempts{0};
 uintptr_t gUnitySlide = 0;
@@ -199,6 +200,7 @@ bool IsSupportedBundle() {
 }
 
 void StartTimer();
+void StartCursorTimer();
 
 // PC mode is deliberately NOT enabled by writing memory.
 //
@@ -347,6 +349,7 @@ bool Activate() {
     if (!akdm::InstallTouchProbe(*gTarget, gUnitySlide)) {
         AKDM_LOG("touch probe deferred (slot not resolved yet)");
     }
+    akdm::InstallScreenHooks(*gTarget, gUnitySlide);
     akdm::AttachHardwareObservers();
 
     gHooksInstalled.store(hooks.installed);
@@ -408,6 +411,7 @@ void SlowTick() {
             if (total >= 3) gHooksComplete.store(true);
         }
     }
+    akdm::InstallScreenHooks(*gTarget, gUnitySlide);
     akdm::AttachHardwareObservers();
     // Keep sampling: if the game assembles its PC input module at any point the
     // gate flips and the log records it, with no hook installed.
@@ -421,6 +425,29 @@ void SlowTick() {
 
 // A single slow maintenance timer; the former fast pointer-polling timer is
 // gone because PlayTools owns the mouse-to-touch path end to end.
+// Window geometry changes rarely, so it is refreshed here instead of on the
+// input path. The position itself is read synchronously inside the
+// get_mousePosition hook, which keeps player latency at zero: there is no timer
+// between the mouse moving and the game seeing it.
+void StartCursorTimer() {
+    if (gCursorTimer != nullptr) return;
+    gCursorTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
+                                          dispatch_get_main_queue());
+    if (gCursorTimer == nullptr) {
+        AKDM_LOG("cursor timer unavailable");
+        return;
+    }
+    const uint64_t interval = 500ull * NSEC_PER_MSEC;
+    dispatch_source_set_timer(gCursorTimer, dispatch_time(DISPATCH_TIME_NOW, 0),
+                              interval, 100ull * NSEC_PER_MSEC);
+    dispatch_source_set_event_handler(gCursorTimer, ^{
+        @autoreleasepool {
+            if (gActivated.load()) akdm::RefreshCursorMapping();
+        }
+    });
+    dispatch_resume(gCursorTimer);
+}
+
 void StartTimer() {
     if (gTimer == nullptr) {
         gTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0,
@@ -459,6 +486,7 @@ __attribute__((constructor)) static void AKDMStart(void) {
             _dyld_register_func_for_add_image(OnImageAdded);
             Activate();
             StartTimer();
+            StartCursorTimer();
         }
     }
 }

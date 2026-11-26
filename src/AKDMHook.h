@@ -24,6 +24,19 @@
 
 namespace akdm {
 
+// Sets the render resolution used to map the host cursor into Unity screen
+// pixels. Implemented by the cursor layer; declared here so the Screen hooks can
+// feed it.
+void SetRenderSize(float width, float height);
+void SetRenderWidth(float width);
+void SetRenderHeight(float height);
+// Reads the host cursor synchronously on the calling thread (zero-latency path).
+bool ReadCursorPosition(float &x, float &y);
+// Raw host cursor in AppKit screen points, for diagnostics.
+void GetCursorScreenPosition(float &x, float &y);
+// Refreshes cached window geometry; call from low-frequency maintenance only.
+void RefreshCursorMapping();
+
 struct InputHookReport {
     bool getKey = false;
     bool getKeyDown = false;

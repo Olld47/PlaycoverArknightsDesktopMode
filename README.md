@@ -184,6 +184,20 @@ zsh tools/test.sh
 | `src/AKDMConfig.*` | 配置读取 |
 | `src/AKDMPlugin.mm` | 入口、目标校验、PC 模式、定时维护 |
 
+## 发版
+
+1. 在 [`RELEASE_NOTES.md`](RELEASE_NOTES.md) 顶部新增一节 `## vX.Y.Z — 一句话主题`。
+2. 同步 `src/AKDMPlugin.mm` 里的 `kPluginVersion`（日志首行会打印它）。
+3. 提交后打标签并推送：
+
+   ```sh
+   git tag -a vX.Y.Z -m "vX.Y.Z: 一句话主题"
+   git push origin vX.Y.Z
+   ```
+
+CI 会构建两个 dylib，并把 `RELEASE_NOTES.md` 中与该标签对应的一节作为正文发布 Release，
+末尾自动追加校验和表格与 Full Changelog 链接。标签与笔记标题必须一致，否则回退为占位正文。
+
 ## 已知限制
 
 - 静态验证针对明日方舟 **2.7.91 (build 76)**；其他版本插件会自行判断，不匹配则拒绝。
