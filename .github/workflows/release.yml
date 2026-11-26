@@ -103,29 +103,50 @@ jobs:
           SHA_DEBUG: ${{ steps.assets.outputs.sha_debug }}
           REPO: ${{ github.repository }}
         run: |
-          # Build the full body up front. gh release create attaches assets by
-          # first creating a DRAFT and only publishing after every upload
-          # succeeds; a later `gh release edit` on that draft can leave it
-          # unpublished. So there must be exactly one edit, with --draft=false.
+          # Body = the matching section of RELEASE_NOTES.md + checksums, built
+          # up front. gh release create attaches assets by first creating a
+          # DRAFT and only publishing once every upload succeeds, and a later
+          # `gh release edit` on that draft can leave it unpublished — so there
+          # is exactly one edit, with --draft=false.
           PREV_TAG=$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || true)
-          cat > body.md <<EOF
-          ## 校验和
 
-          | 文件 | SHA256 |
-          | --- | --- |
-          | \`libAKDMDesktopMode.dylib\` | \`$SHA_MAIN\` |
-          | \`libAKDMDesktopMode-debug.dylib\` | \`$SHA_DEBUG\` |
+          # Take the section whose heading starts with this tag, up to the next
+          # "## " heading. Falls back to a stub if the file has no entry, so a
+          # forgotten note never blocks a release.
+          awk -v tag="$GITHUB_REF_NAME" '
+            BEGIN { printing = 0 }
+            /^## / {
+              if (printing) exit
+              if ($0 ~ ("^## " tag "( |$|—)")) { printing = 1; sub(/^## /, ""); print "# " $0; next }
+            }
+            printing { print }
+          ' RELEASE_NOTES.md > body.md
 
-          > [!NOTE]
-          > Release 由 CI 在 macOS runner 上构建并 ad-hoc 签名，哈希与自行构建不同（签名含
-          > 时间戳）。校验下载文件：\`shasum -a 256 <下载的 dylib>\`，与上表比对。
-          EOF
-          if [ -n "$PREV_TAG" ]; then
-            {
-              echo ""
-              echo "**Full Changelog**: https://github.com/$REPO/compare/$PREV_TAG...$GITHUB_REF_NAME"
-            } >> body.md
+          if [ ! -s body.md ]; then
+            echo "# $GITHUB_REF_NAME" > body.md
+            echo "" >> body.md
+            echo "RELEASE_NOTES.md 中没有 $GITHUB_REF_NAME 的条目。" >> body.md
           fi
+
+          {
+            echo ""
+            echo "## 校验和"
+            echo ""
+            echo "| 文件 | SHA256 |"
+            echo "| --- | --- |"
+            echo "| \`libAKDMDesktopMode.dylib\` | \`$SHA_MAIN\` |"
+            echo "| \`libAKDMDesktopMode-debug.dylib\` | \`$SHA_DEBUG\` |"
+            echo ""
+            echo "> [!NOTE]"
+            echo "> Release 由 CI 在 macOS runner 上构建并 ad-hoc 签名，哈希与自行构建不同（签名含"
+            echo "> 时间戳）。校验下载文件：\`shasum -a 256 <下载的 dylib>\`，与上表比对。"
+          } >> body.md
+
+          if [ -n "$PREV_TAG" ]; then
+            echo "" >> body.md
+            echo "**Full Changelog**: https://github.com/$REPO/compare/$PREV_TAG...$GITHUB_REF_NAME" >> body.md
+          fi
+
           gh release create "$GITHUB_REF_NAME" \
             --title "$GITHUB_REF_NAME" \
             --verify-tag \
